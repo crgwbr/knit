@@ -1,0 +1,4 @@
+mesh:
+    port: 42000
+    queue: 5
+log_format: "%(asctime)s %(levelname)s %(message)s"
