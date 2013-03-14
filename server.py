@@ -4,7 +4,8 @@
 import yaml
 from optparse import OptionParser
 import logging
-
+import sys
+import signal
 import knit
 
 
@@ -42,16 +43,29 @@ def main():
     logging.basicConfig(level=logging.DEBUG, format=logFormat)
     
     port = getSetting('mesh.port', options.settings)
-    queue = getSetting('mesh.queue', options.settings)
-    server = knit.Server(port, queue)
+    queuedConnections = getSetting('mesh.queue', options.settings)
+    meshServer = knit.Server(port, queuedConnections)
     
     if options.discover:
         host, port = options.discover.split(":")
         remoteAddress = host, int(port)
-        server.discoverMesh(remoteAddress)
+        meshServer.discoverMesh(remoteAddress)
     
-    server.listen()
-
+    thread = meshServer.listen()
+    
+    def die(signum, frame):
+        logging.info("Caught Signal %s." % signum)
+        meshServer.stop()
+        thread.join()
+        sys.exit()
+    
+    signal.signal(signal.SIGINT, die)
+    signal.signal(signal.SIGTSTP, die)
+    
+    frontend = getSetting('frontend', options.settings)
+    backend = getSetting('backend', options.settings)
+    knit.HTTPProxyServer.start(frontend, backend)
+    
 
 if __name__ == "__main__":
     main()

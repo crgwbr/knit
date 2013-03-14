@@ -2,3 +2,10 @@ mesh:
     port: 42000
     queue: 5
 log_format: "%(asctime)s %(levelname)s %(message)s"
+cache: "MemoryCache"
+backend:
+   host: "crgwbr.com"
+   port: 80
+frontend:
+   host: ""
+   port: 8080

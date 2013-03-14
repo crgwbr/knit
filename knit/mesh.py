@@ -11,16 +11,25 @@ import random
 import socket
 import logging
 import simplejson
+import threading
+import sys
+import Queue
 
 
 class Server(object):
+    SIG_STOP = 1
+    SOCKET_TIMEOUT = 0.1
+    PORT_RANGE = 1000
+    
     token = None
     localAddress = None
     nodes = {}
     sock = None
+    controlQueue = None
     
-    def __init__(self, port, queue):
-        self.sock = self.__getServerSocket(port, queue)
+    def __init__(self, port, queuedConnections):
+        self.sock = self.__getServerSocket(port, queuedConnections)
+        self.controlQueue = Queue.Queue()
     
     
     def discoverMesh(self, remoteAddress):
@@ -56,8 +65,14 @@ class Server(object):
     
     
     def listen(self):
-        while True:
-            self.__handleServerConnection()
+        t = threading.Thread(target = self.__daemon)
+        t.daemon = True
+        t.start()
+        return t
+    
+    
+    def stop(self):
+        self.controlQueue.put(self.SIG_STOP)
     
     
     def __addNode(self, remoteAddress, token = None):
@@ -70,6 +85,18 @@ class Server(object):
         node = Node(self, remoteAddress, token)
         self.nodes[node.token] = node
         return node
+    
+    
+    def __daemon(self):
+        while True:
+            try:
+                msg = self.controlQueue.get(False)
+                if msg == self.SIG_STOP:
+                    sys.exit()
+            except Queue.Empty:
+                pass
+            
+            self.__handleServerConnection()
     
     
     def __generateServerToken(self):
@@ -92,10 +119,10 @@ class Server(object):
         return Node(self, remoteAddress, clientToken)
 
 
-    def __getServerSocket(self, port, queue):
+    def __getServerSocket(self, port, queuedConnections):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-        while True:
+        while port <= (port + self.PORT_RANGE):
             try:
                 self.localAddress = (socket.gethostname(), port)
                 server.bind(self.localAddress)
@@ -103,14 +130,19 @@ class Server(object):
             except socket.error:
                 port += 1
         
-        server.listen(queue)
+        server.settimeout(self.SOCKET_TIMEOUT)
+        server.listen(queuedConnections)
         logging.info("Mesh Server listening on %s:%s" % self.localAddress)
         return server
 
 
     def __handleServerConnection(self):
         # Wait for connection
-        client, remoteAddress = self.sock.accept()
+        try:
+            client, remoteAddress = self.sock.accept()
+        except socket.timeout:
+            return
+        
         logging.info("Incoming Connection from %s:%s" % remoteAddress)
         
         # Process the request
@@ -124,7 +156,7 @@ class Server(object):
         fn = self.__resolveAction(action)
         responseData = fn(node, requestData) if fn else None
         
-        # Send an acknowledgement along with the response data
+        # Send an ACKNOWLEDGEnowledgement along with the response data
         messaging.sendAck(responseData)
         messaging.close()
     
@@ -138,9 +170,10 @@ class Server(object):
 
 
 class MessagingSocket(object):
-    sep = "&&"
-    delim = ";;"
-    ack = "Ok."
+    SEPERATOR = "&&"
+    DELIMITER = ";;"
+    ACKNOWLEDGE = "Ok."
+    
     sock = None
     localServer = None
     
@@ -172,7 +205,7 @@ class MessagingSocket(object):
     
     
     def sendAck(self, data):
-        return self.send(self.ack, data)
+        return self.send(self.ACKNOWLEDGE, data)
     
     
     def recv(self):
@@ -185,10 +218,10 @@ class MessagingSocket(object):
             except socket.error:
                 chunk = ''
             
-            if chunk == '' or response.endswith(self.delim):
+            if chunk == '' or response.endswith(self.DELIMITER):
                 break
         
-        if not response.endswith(self.delim):
+        if not response.endswith(self.DELIMITER):
             raise RuntimeError("Socket connection to broken during receive.")
         
         return self.__disassembleMessage(response)
@@ -197,16 +230,16 @@ class MessagingSocket(object):
     def __assembleMessage(self, action, data = None):
         data = simplejson.dumps(data)
         parts = self.localServer.getServerToken(), action, data
-        message = self.sep.join(parts)
-        return message + self.delim
+        message = self.SEPERATOR.join(parts)
+        return message + self.DELIMITER
     
     
     def __disassembleMessage(self, message):
-        if not message.endswith(self.delim):
+        if not message.endswith(self.DELIMITER):
             raise RuntimeError("Attempted to decode malformed message.")
         
-        message = message.rstrip(self.delim)
-        senderToken, action, data = message.split(self.sep)
+        message = message.rstrip(self.DELIMITER)
+        senderToken, action, data = message.split(self.SEPERATOR)
         data = simplejson.loads(data)
         return senderToken, action, data
 

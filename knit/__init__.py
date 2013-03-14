@@ -6,3 +6,7 @@ from mesh import (
     Server,
     Node
 )
+
+from proxy import (
+    HTTPProxyServer
+)
