@@ -1,0 +1,3 @@
+[submodule "knit/simplecache"]
+	path = knit/simplecache
+	url = git://github.com/PioneeringLabs/simplecache.git
