@@ -43,15 +43,14 @@ def main():
     
     port = getSetting('mesh.port', options.settings)
     queue = getSetting('mesh.queue', options.settings)
-    server = knit.getServerSocket(port, queue)
+    server = knit.Server(port, queue)
     
     if options.discover:
         host, port = options.discover.split(":")
-        port = int(port)
-        remoteAddress = (host, port)
-        knit.discoverMesh(remoteAddress)
+        remoteAddress = host, int(port)
+        server.discoverMesh(remoteAddress)
     
-    knit.runMeshServer(server)
+    server.listen()
 
 
 if __name__ == "__main__":

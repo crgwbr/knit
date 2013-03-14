@@ -13,196 +13,239 @@ import logging
 import simplejson
 
 
-token = None
-localAddress = None
-nodes = {}
-
-
-def addNode(remoteAddress, token = None):
-    global nodes
-    logging.info("Found New Node: %s:%s" % tuple(remoteAddress))
-    node = Node(remoteAddress, token)
-    nodes[node.token] = node
-    return node
-
-
-def getNodeUniqueToken():
-    global token
-    if not token:
-        token = generateNodeUniqueToken()
-    return token
-
-
-def generateNodeUniqueToken():
-    stamp = time.time()
-    random.seed(stamp)
-    
-    rand = 100
-    for i in range(10):
-        rand = rand * random.random()
-    rand = rand * 1000000
-    
-    token = "%s-%s-%s" % (stamp, rand, socket.gethostname())
-    return hashlib.md5(token).hexdigest()
-
-
-def discoverMesh(remoteAddress):
-    global nodes
-    
-    node = addNode(remoteAddress)
-    token, action, data = node.sendMessage("GetNodeList")
-    
-    for token, remoteAddress in data.iteritems():
-        addNode(remoteAddress)
-
-
-def getServerSocket(port, queue):
-    global localAddress
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-    while True:
-        try:
-            localAddress = (socket.gethostname(), port)
-            server.bind(localAddress)
-            break
-        except socket.error:
-            port += 1
-    
-    server.listen(queue)
-    logging.info("Mesh Server listening on %s:%s" % localAddress)
-    return server
-
-
-def handleServerConnection(server):
-    global nodes
-    
-    (client, remoteAddress) = server.accept()
-    logging.info("Incoming Connection from %s:%s" % remoteAddress)
-    
-    message = Node.recv(client)
-    clientToken, action, requestData = Node.disassembleMessage(message)
-    
-    if clientToken in nodes.keys():
-        node = nodes[clientToken]
-    else:
-        node = Node(remoteAddress, clientToken)
-    
-    fnName = "do%s" % action
-    responseData = None
-    if hasattr(node, fnName):
-        fn = getattr(node, fnName)
-        if callable(fn):
-            responseData = fn(requestData)
-    
-    message = Node.assembleMessage(Node.ack, responseData)
-    Node.send(client, message)
-    
-    try:
-        client.shutdown(socket.SHUT_RDWR)
-        client.close()
-    except socket.error:
-        pass
-
-
-def runMeshServer(server):
-    while True:
-        handleServerConnection(server)
-
-
-class Node(object):
-    address = None
+class Server(object):
     token = None
+    localAddress = None
+    nodes = {}
+    sock = None
+    
+    def __init__(self, port, queue):
+        self.sock = self.__getServerSocket(port, queue)
+    
+    
+    def discoverMesh(self, remoteAddress):
+        node = self.__addNode(remoteAddress)
+        token, action, data = node.sendMessage("GetNodeList")
+        
+        for token, remoteAddress in data.iteritems():
+            self.__addNode(remoteAddress)
+        
+        return self.nodes
+    
+    
+    def doGetNodeList(self, clientNode, requestData):
+        nodes = {}
+        for token, node in self.nodes.iteritems():
+            if token != clientNode.getToken():
+                nodes[token] = node.getAddress()
+        return nodes
+    
+    
+    def doRegisterNewServer(self, clientNode, requestData):
+        self.__addNode(requestData, clientNode.getToken())
+    
+    
+    def getServerAddress(self):
+        return self.localAddress
+    
+    
+    def getServerToken(self):
+        if not self.token:
+            self.token = self.__generateServerToken()
+        return self.token
+    
+    
+    def listen(self):
+        while True:
+            self.__handleServerConnection()
+    
+    
+    def __addNode(self, remoteAddress, token = None):
+        if token == self.getServerToken():
+            return
+        
+        remoteAddress = tuple(remoteAddress)
+        logging.info("Found New Node: %s:%s" % remoteAddress)
+        
+        node = Node(self, remoteAddress, token)
+        self.nodes[node.token] = node
+        return node
+    
+    
+    def __generateServerToken(self):
+        stamp = time.time()
+        random.seed(stamp)
+        
+        rand = 100
+        for i in range(10):
+            rand = rand * random.random()
+        rand = rand * 1000000
+        
+        token = "%s-%s-%s" % (stamp, rand, socket.gethostname())
+        return hashlib.md5(token).hexdigest()
+    
+    
+    def __getNode(self, clientToken, remoteAddress):
+        if clientToken in self.nodes.keys():
+            return self.nodes[clientToken]
+        
+        return Node(self, remoteAddress, clientToken)
+
+
+    def __getServerSocket(self, port, queue):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        while True:
+            try:
+                self.localAddress = (socket.gethostname(), port)
+                server.bind(self.localAddress)
+                break
+            except socket.error:
+                port += 1
+        
+        server.listen(queue)
+        logging.info("Mesh Server listening on %s:%s" % self.localAddress)
+        return server
+
+
+    def __handleServerConnection(self):
+        # Wait for connection
+        client, remoteAddress = self.sock.accept()
+        logging.info("Incoming Connection from %s:%s" % remoteAddress)
+        
+        # Process the request
+        messaging = MessagingSocket(client, self)
+        clientToken, action, requestData = messaging.recv()
+        
+        # Find the client Node
+        node = self.__getNode(clientToken, remoteAddress)
+        
+        # Perform the requested action
+        fn = self.__resolveAction(action)
+        responseData = fn(node, requestData) if fn else None
+        
+        # Send an acknowledgement along with the response data
+        messaging.sendAck(responseData)
+        messaging.close()
+    
+    
+    def __resolveAction(self, action):
+        fnName = "do%s" % action
+        if hasattr(self, fnName):
+            fn = getattr(self, fnName)
+            if callable(fn):
+                return fn
+
+
+class MessagingSocket(object):
     sep = "&&"
     delim = ";;"
     ack = "Ok."
+    sock = None
+    localServer = None
+    
+    def __init__(self, sock, localServer):
+        self.sock = sock
+        self.localServer = localServer
     
     
-    @classmethod
-    def assembleMessage(cls, action, data = None):
-        data = simplejson.dumps(data)
-        parts = (getNodeUniqueToken(), action, data)
-        message = cls.sep.join(parts)
-        return message + cls.delim
+    def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+            self.sock.close()
+        except socket.error:
+            pass
     
     
-    @classmethod
-    def disassembleMessage(cls, message):
-        if not message.endswith(cls.delim):
-            raise RuntimeError("Attempted to decode malformed message.")
-        message = message.rstrip(cls.delim)
-        senderToken, action, data = message.split(cls.sep)
-        data = simplejson.loads(data)
-        return senderToken, action, data
-    
-    
-    @classmethod
-    def send(cls, sock, message):
+    def send(self, action, data):
+        message = self.__assembleMessage(action, data)
+        
         totalsent = 0
         while totalsent < len(message):
             chunk = message[totalsent:]
-            sent = sock.send(chunk)
+            sent = self.sock.send(chunk)
             if sent == 0:
                 raise RuntimeError("Socket connection broken during send.")
             totalsent = totalsent + sent
+        
         return totalsent
     
     
-    @classmethod
-    def recv(cls, sock):
+    def sendAck(self, data):
+        return self.send(self.ack, data)
+    
+    
+    def recv(self):
         response = ''
+        
         while True:
             try:
-                chunk = sock.recv(1024)
+                chunk = self.sock.recv(1024)
                 response = response + chunk
             except socket.error:
                 chunk = ''
-            if chunk == '' or response.endswith(cls.delim):
+            
+            if chunk == '' or response.endswith(self.delim):
                 break
         
-        if not response.endswith(cls.delim):
+        if not response.endswith(self.delim):
             raise RuntimeError("Socket connection to broken during receive.")
         
-        return response
+        return self.__disassembleMessage(response)
     
-    def __init__(self, remoteAddress, token = None):
+    
+    def __assembleMessage(self, action, data = None):
+        data = simplejson.dumps(data)
+        parts = self.localServer.getServerToken(), action, data
+        message = self.sep.join(parts)
+        return message + self.delim
+    
+    
+    def __disassembleMessage(self, message):
+        if not message.endswith(self.delim):
+            raise RuntimeError("Attempted to decode malformed message.")
+        
+        message = message.rstrip(self.delim)
+        senderToken, action, data = message.split(self.sep)
+        data = simplejson.loads(data)
+        return senderToken, action, data
+
+
+class Node(object):
+    localServer = None
+    address = None
+    token = None
+    
+    def __init__(self, localServer, remoteAddress, token = None):
+        self.localServer = localServer
         self.address = tuple(remoteAddress)
         
         if not token:
-            token, action, data = self.sendRegisterNewServer()
+            token, action, data = self.__sendRegisterNewServer()
+        
         self.token = token
+    
+    
+    def getAddress(self):
+        return self.address
+    
+    
+    def getToken(self):
+        return self.token
     
     
     def sendMessage(self, action, data = None):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect(self.address)
         
-        message = self.assembleMessage(action, data)
-        self.send(s, message)
-        response = self.recv(s)
-        response = self.disassembleMessage(response)
+        messaging = MessagingSocket(s, self.localServer)
+        messaging.send(action, data)
+        response = messaging.recv()
+        messaging.close()
         
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-            s.close()
-        except socket.error:
-            pass
         return response
     
     
-    def sendRegisterNewServer(self):
-        global localAddress
-        return self.sendMessage("RegisterNewServer", localAddress)
-    
-    
-    def doGetNodeList(self, requestData):
-        global nodes
-        nodeInfo = {}
-        for token, node in nodes.iteritems():
-            if token != self.token:
-                nodeInfo[token] = node.address
-        return nodeInfo
-    
-    
-    def doRegisterNewServer(self, remoteAddress):
-        addNode(remoteAddress, self.token)
+    def __sendRegisterNewServer(self):
+        return self.sendMessage("RegisterNewServer", self.localServer.getServerAddress())
 
