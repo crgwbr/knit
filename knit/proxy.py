@@ -9,6 +9,7 @@ from wsgiref.util import is_hop_by_hop
 import logging
 import requests
 import re
+from simplecache import Cache
 
 
 class WSGIEnviron(object):
@@ -39,7 +40,7 @@ class HTTPProxyServer:
     def __init__(self, frontend, backend, cache = None):
         self.frontend = frontend
         self.backend = backend
-        self.cache = cache
+        self.cache = cache or Cache('DummyCache')
         
         self.setCacheMethods(('GET', 'HEAD'))
         self.setCacheRules((("^.*$", "%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"),))
