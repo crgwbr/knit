@@ -14,9 +14,23 @@ import simplejson
 import threading
 import sys
 import Queue
+from simplecache import Cache
 
 
-class Server(object):
+class MeshCache(Cache):
+    def __init__(self, meshServer, backend, **config):
+        self.meshServer = meshServer
+        Cache.__init__(self, backend, **config)
+    
+    def get(self, key):
+        return Cache.get(self, key)
+    
+    def set(self, key, value, expire = 0):
+        return Cache.set(self, key, value, expire)
+    
+
+
+class MeshServer(object):
     SIG_STOP = 1
     SOCKET_TIMEOUT = 0.1
     PORT_RANGE = 1000

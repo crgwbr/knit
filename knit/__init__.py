@@ -3,8 +3,8 @@
 # knit.__init__
 
 from mesh import (
-    Server,
-    Node
+    MeshCache,
+    MeshServer
 )
 
 from proxy import (

@@ -9,63 +9,116 @@ import signal
 import knit
 
 
-def openSettingsFile(path):
-    try:
-        defaultsFile = open(path, 'rU')
-    except IOError:
-        return {}
+class KnitMeshProxy(object):
+    settings = {}
+    options = None
+    meshServer = None
+    meshThread = None
     
-    return yaml.load(defaultsFile)
-
-
-def getSetting(key, settingsFile = None):
-    defaults = openSettingsFile('default.yml')
-    settings = openSettingsFile(settingsFile) if settingsFile else {}
+    def __init__(self):
+        self.__loadOptions()
+        self.__setupLogging()
+        self.__buildMeshServer()
+        self.__discoverMeshNetwork()
     
-    subDefault = defaults
-    subSetting = settings
-    for segment in key.split('.'):
-        subDefault = subDefault or {}
-        subDefault = subDefault.get(segment)
-        subSetting = subSetting or {}
-        subSetting = subSetting.get(segment)
     
-    return subSetting or subDefault
-
-
-def main():
-    parser = OptionParser()
-    parser.add_option("-s", "--settings", help="Custom Settings File", metavar="FILE")
-    parser.add_option("-d", "--discover", help="Mesh Discovery Address", metavar="HOST:PORT")
-    options, args = parser.parse_args()
+    def __call__(self):
+        self.__setupErrorHandling()
+        self.__startMeshServer()
+        self.__startProxyServer()
     
-    logFormat = getSetting('log_format', options.settings)
-    logging.basicConfig(level=logging.DEBUG, format=logFormat)
     
-    port = getSetting('mesh.port', options.settings)
-    queuedConnections = getSetting('mesh.queue', options.settings)
-    meshServer = knit.Server(port, queuedConnections)
+    def __buildMeshServer(self):
+        port = self.__getSetting('mesh.port')
+        queuedConnections = self.__getSetting('mesh.queue')
+        self.meshServer = knit.MeshServer(port, queuedConnections)
     
-    if options.discover:
-        host, port = options.discover.split(":")
+    
+    def __discoverMeshNetwork(self):
+        if not self.options.discover:
+            return
+        
+        host, port = self.options.discover.split(":")
         remoteAddress = host, int(port)
-        meshServer.discoverMesh(remoteAddress)
+        self.meshServer.discoverMesh(remoteAddress)
     
-    thread = meshServer.listen()
     
-    def die(signum, frame):
-        logging.info("Caught Signal %s." % signum)
-        meshServer.stop()
-        thread.join()
-        sys.exit()
+    def __getSetting(self, key):
+        defaults = self.__openSettingsFile('default.yml')
+        settings = self.__openSettingsFile(self.options.settings)
+        
+        subDefault = defaults
+        subSetting = settings
+        for segment in key.split('.'):
+            subDefault = subDefault or {}
+            subDefault = subDefault.get(segment)
+            subSetting = subSetting or {}
+            subSetting = subSetting.get(segment)
+        
+        return subSetting or subDefault
     
-    signal.signal(signal.SIGINT, die)
-    signal.signal(signal.SIGTSTP, die)
     
-    frontend = getSetting('frontend', options.settings)
-    backend = getSetting('backend', options.settings)
-    knit.HTTPProxyServer.start(frontend, backend)
+    def __loadOptions(self):
+        parser = OptionParser()
+        parser.add_option("-s", "--settings", help="Custom Settings File", metavar="FILE")
+        parser.add_option("-d", "--discover", help="Mesh Discovery Address", metavar="HOST:PORT")
+        options, args = parser.parse_args()
+        self.options = options
+    
+    
+    def __openSettingsFile(self, path):
+        if not path:
+            return {}
+        
+        if path in self.settings.keys():
+            return self.settings[path]
+        
+        try:
+            defaultsFile = open(path, 'rU')
+        except IOError:
+            return {}
+        
+        settings = yaml.load(defaultsFile)
+        self.settings[path] = settings
+        return settings
+    
+    
+    def __setupErrorHandling(self):
+        def die(signum, frame):
+            logging.info("Caught Signal %s." % signum)
+            self.meshServer.stop()
+            self.meshThread.join()
+            sys.exit()
+        
+        signal.signal(signal.SIGINT, die)
+        signal.signal(signal.SIGTSTP, die)
+    
+    
+    def __setupLogging(self):
+        logFormat = self.__getSetting('log.format')
+        logLevel = self.__getSetting('log.level')
+        logLevel = getattr(logging, logLevel) if hasattr(logging, logLevel) else logging.DEBUG
+        
+        logging.basicConfig(level=logLevel, format=logFormat)
+    
+    
+    def __startMeshServer(self):
+        self.meshThread = self.meshServer.listen()
+    
+    
+    def __startProxyServer(self):
+        cacheBackend = self.__getSetting('cache.backend')
+        cache = knit.MeshCache(self.meshServer, cacheBackend)
+        
+        httpFrontend = self.__getSetting('http.frontend')
+        httpBackend = self.__getSetting('http.backend')
+        
+        server = knit.HTTPProxyServer(httpFrontend, httpBackend, cache = cache)
+        server.setCacheMethods(self.__getSetting('cache.methods'))
+        server.setCacheRules(self.__getSetting('cache.rules'))
+        server.run()
     
 
 if __name__ == "__main__":
-    main()
+    proxy = KnitMeshProxy()
+    proxy()

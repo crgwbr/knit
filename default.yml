@@ -1,11 +1,20 @@
 mesh:
     port: 42000
     queue: 5
-log_format: "%(asctime)s %(levelname)s %(message)s"
-cache: "MemoryCache"
-backend:
-   host: "crgwbr.com"
-   port: 80
-frontend:
-   host: ""
-   port: 8080
+log: 
+    format: "%(asctime)s %(levelname)s %(message)s"
+    level: "DEBUG"
+cache:
+    backend: "MemoryCache"
+    rules:
+        - ["^.*$", "%(REQUEST_METHOD)s;%(SERVER_PROTOCOL)s;%(SERVER_NAME)s;%(SERVER_PORT)s;%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"]
+    methods:
+        - "HEAD"
+        - "GET"
+http:
+    backend:
+        host: "crgwbr.com"
+        port: 80
+    frontend:
+        host: "0.0.0.0"
+        port: 8080
