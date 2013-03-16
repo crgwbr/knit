@@ -39,7 +39,7 @@ class HTTPProxyServer:
         self.__cache = cache or Cache('DummyCache')
         
         self.setCacheMethods(('GET', 'HEAD'))
-        self.setCacheRules((("^.*$", "%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"),))
+        self.setCacheRules((("^.*$", "%(REQUEST_METHOD)s %(PATH_INFO)s?%(QUERY_STRING)s %(HTTP_COOKIE)s"),))
     
     
     def setCacheMethods(self, methods):

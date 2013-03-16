@@ -1,6 +1,6 @@
 # Knit
 
-Knit is a simple HTTP Proxy (think varnish) with a self replicating mesh network of caches. This enables multiple, geolocated cache-proxies to share cached resources. It can use anything from process memory to memcache as the actual cache backend; actual cache data replication is handled entirely within knit.
+Knit is an experimental HTTP Proxy (think varnish) with a self replicating peer-to-peer mesh network of caches. This enables multiple, geolocated cache-proxies to share cached resources. It can use anything from process memory to memcache as the actual cache backend; actual cache data replication is handled entirely within knit.
 
 ## Usage
 
