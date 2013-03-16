@@ -4,7 +4,6 @@
 # 
 # Module containing components for proxying HTTP traffic
 
-from wsgiref.simple_server import make_server
 from wsgiref.util import is_hop_by_hop
 import logging
 import requests
@@ -28,7 +27,6 @@ class WSGIEnviron(object):
 
 
 class HTTPProxyServer:
-    frontend = None
     backend = None
     cache = None
     
@@ -37,21 +35,12 @@ class HTTPProxyServer:
     preventCachingControls = ('private', 'no-cache', 'no-store', 'must-revalidate', 'proxy-revalidate')
     
     
-    def __init__(self, frontend, backend, cache = None):
-        self.frontend = frontend
+    def __init__(self, backend, cache = None):
         self.backend = backend
         self.cache = cache or Cache('DummyCache')
         
         self.setCacheMethods(('GET', 'HEAD'))
         self.setCacheRules((("^.*$", "%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"),))
-    
-    
-    def run(self):
-        logging.info("Running HTTP Proxy on %(host)s:%(port)s" % self.frontend)
-        logging.info("Using HTTP backend %(host)s:%(port)s" % self.backend)
-        
-        httpd = make_server(self.frontend['host'], self.frontend['port'], self)
-        httpd.serve_forever()
     
     
     def setCacheMethods(self, methods):

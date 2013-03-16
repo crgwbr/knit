@@ -4,6 +4,7 @@ mesh:
 log: 
     format: "%(asctime)s %(levelname)s %(message)s"
     level: "DEBUG"
+    stream: "stdout"
 cache:
     backend: "MemoryCache"
     rules:

@@ -86,6 +86,7 @@ class MeshServer(object):
     
     
     def stop(self):
+        logging.critical("Sending halt signal to mesh server.")
         self.controlQueue.put(self.SIG_STOP)
     
     
@@ -106,6 +107,7 @@ class MeshServer(object):
             try:
                 msg = self.controlQueue.get(False)
                 if msg == self.SIG_STOP:
+                    logging.critical("Mesh server exiting now.")
                     sys.exit()
             except Queue.Empty:
                 pass
