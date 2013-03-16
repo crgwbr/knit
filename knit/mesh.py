@@ -10,7 +10,8 @@ import time
 import random
 import socket
 import logging
-import simplejson
+import yaml
+import base64
 import threading
 import sys
 import Queue
@@ -22,28 +23,28 @@ class MeshCache(Cache):
         self.meshServer = meshServer
         Cache.__init__(self, backend, **config)
     
-    def get(self, key):
-        return Cache.get(self, key)
-    
-    def set(self, key, value, expire = 0):
+    def set(self, key, value, expire = 0, replicate = True):
+        if replicate:
+            self.meshServer.replicateCacheEntry(key, value, expire)
         return Cache.set(self, key, value, expire)
-    
+
 
 
 class MeshServer(object):
     SIG_STOP = 1
-    SOCKET_TIMEOUT = 0.1
+    SOCKET_TIMEOUT = 1
     PORT_RANGE = 1000
     
-    token = None
-    localAddress = None
-    nodes = {}
-    sock = None
-    controlQueue = None
+    __token = None
+    __localAddress = None
+    __nodes = {}
+    __sock = None
+    __controlQueue = None
+    __cacheBackend = None
     
     def __init__(self, port, queuedConnections):
-        self.sock = self.__getServerSocket(port, queuedConnections)
-        self.controlQueue = Queue.Queue()
+        self.__sock = self.__getServerSocket(port, queuedConnections)
+        self.__controlQueue = Queue.Queue()
     
     
     def discoverMesh(self, remoteAddress):
@@ -53,12 +54,12 @@ class MeshServer(object):
         for token, remoteAddress in data.iteritems():
             self.__addNode(remoteAddress)
         
-        return self.nodes
+        return self.__nodes
     
     
     def doGetNodeList(self, clientNode, requestData):
         nodes = {}
-        for token, node in self.nodes.iteritems():
+        for token, node in self.__nodes.iteritems():
             if token != clientNode.getToken():
                 nodes[token] = node.getAddress()
         return nodes
@@ -68,14 +69,20 @@ class MeshServer(object):
         self.__addNode(requestData, clientNode.getToken())
     
     
+    def doSaveCacheEntry(self, clientNode, requestData):
+        key, value, expire = requestData
+        logging.debug("Cache entry push from %s for key %s" % (clientNode.getToken(), key))
+        self.__cacheBackend.set(key, value, expire, replicate = False)
+    
+    
     def getServerAddress(self):
-        return self.localAddress
+        return self.__localAddress
     
     
     def getServerToken(self):
-        if not self.token:
-            self.token = self.__generateServerToken()
-        return self.token
+        if not self.__token:
+            self.__token = self.__generateServerToken()
+        return self.__token
     
     
     def listen(self):
@@ -85,9 +92,17 @@ class MeshServer(object):
         return t
     
     
+    def replicateCacheEntry(self, key, value, expire):
+        self.__broadcast('SaveCacheEntry', (key, value, expire))
+    
+    
+    def setCacheBackend(self, backend):
+        self.__cacheBackend = backend
+    
+    
     def stop(self):
         logging.critical("Sending halt signal to mesh server.")
-        self.controlQueue.put(self.SIG_STOP)
+        self.__controlQueue.put(self.SIG_STOP)
     
     
     def __addNode(self, remoteAddress, token = None):
@@ -98,21 +113,35 @@ class MeshServer(object):
         logging.info("Found New Node: %s:%s" % remoteAddress)
         
         node = Node(self, remoteAddress, token)
-        self.nodes[node.token] = node
+        self.__nodes[node.getToken()] = node
         return node
+    
+    
+    def __broadcast(self, action, data):
+        def daemon():
+            for token, node in self.__nodes.iteritems():
+                recvToken, recvAction, recvData = node.sendMessage(action, data)
+                if recvAction != MessagingSocket.ACKNOWLEDGE:
+                    logging.error("Failed to receive acknowledgement from %s/%s" % (node.getToken(), action))
+        t = threading.Thread(target = daemon)
+        t.daemon = True
+        t.start()
     
     
     def __daemon(self):
         while True:
             try:
-                msg = self.controlQueue.get(False)
+                msg = self.__controlQueue.get(False)
                 if msg == self.SIG_STOP:
                     logging.critical("Mesh server exiting now.")
                     sys.exit()
             except Queue.Empty:
                 pass
             
-            self.__handleServerConnection()
+            try:
+                self.__handleServerConnection()
+            except Exception, e:
+                logging.exception("Caught Exception: %s" % e)
     
     
     def __generateServerToken(self):
@@ -129,8 +158,8 @@ class MeshServer(object):
     
     
     def __getNode(self, clientToken, remoteAddress):
-        if clientToken in self.nodes.keys():
-            return self.nodes[clientToken]
+        if clientToken in self.__nodes.keys():
+            return self.__nodes[clientToken]
         
         return Node(self, remoteAddress, clientToken)
 
@@ -140,26 +169,26 @@ class MeshServer(object):
         
         while port <= (port + self.PORT_RANGE):
             try:
-                self.localAddress = (socket.gethostname(), port)
-                server.bind(self.localAddress)
+                self.__localAddress = (socket.gethostname(), port)
+                server.bind(self.__localAddress)
                 break
             except socket.error:
                 port += 1
         
         server.settimeout(self.SOCKET_TIMEOUT)
         server.listen(queuedConnections)
-        logging.info("Mesh Server listening on %s:%s" % self.localAddress)
+        logging.info("Mesh Server listening on %s:%s" % self.__localAddress)
         return server
 
 
     def __handleServerConnection(self):
         # Wait for connection
         try:
-            client, remoteAddress = self.sock.accept()
+            client, remoteAddress = self.__sock.accept()
         except socket.timeout:
             return
         
-        logging.info("Incoming Connection from %s:%s" % remoteAddress)
+        logging.debug("Incoming Connection from %s:%s" % remoteAddress)
         
         # Process the request
         messaging = MessagingSocket(client, self)
@@ -172,7 +201,7 @@ class MeshServer(object):
         fn = self.__resolveAction(action)
         responseData = fn(node, requestData) if fn else None
         
-        # Send an ACKNOWLEDGEnowledgement along with the response data
+        # Send an Acknowledgement along with the response data
         messaging.sendAck(responseData)
         messaging.close()
     
@@ -190,18 +219,18 @@ class MessagingSocket(object):
     DELIMITER = ";;"
     ACKNOWLEDGE = "Ok."
     
-    sock = None
-    localServer = None
+    __sock = None
+    __localServer = None
     
     def __init__(self, sock, localServer):
-        self.sock = sock
-        self.localServer = localServer
+        self.__sock = sock
+        self.__localServer = localServer
     
     
     def close(self):
         try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-            self.sock.close()
+            self.__sock.shutdown(socket.SHUT_RDWR)
+            self.__sock.close()
         except socket.error:
             pass
     
@@ -212,7 +241,7 @@ class MessagingSocket(object):
         totalsent = 0
         while totalsent < len(message):
             chunk = message[totalsent:]
-            sent = self.sock.send(chunk)
+            sent = self.__sock.send(chunk)
             if sent == 0:
                 raise RuntimeError("Socket connection broken during send.")
             totalsent = totalsent + sent
@@ -229,65 +258,70 @@ class MessagingSocket(object):
         
         while True:
             try:
-                chunk = self.sock.recv(1024)
+                chunk = self.__sock.recv(1024)
                 response = response + chunk
-            except socket.error:
+            except socket.error, e:
                 chunk = ''
+                # UGLY Hack around BSD platforms raising errors when sockets are
+                # temp unavailable. TODO: Make this prettier
+                if str(e) == "[Errno 35] Resource temporarily unavailable":
+                    time.sleep(0)
+                    continue
             
             if chunk == '' or response.endswith(self.DELIMITER):
                 break
-        
-        if not response.endswith(self.DELIMITER):
-            raise RuntimeError("Socket connection to broken during receive.")
         
         return self.__disassembleMessage(response)
     
     
     def __assembleMessage(self, action, data = None):
-        data = simplejson.dumps(data)
-        parts = self.localServer.getServerToken(), action, data
+        data = yaml.dump(data)
+        parts = self.__localServer.getServerToken(), action, data
         message = self.SEPERATOR.join(parts)
-        return message + self.DELIMITER
+        message = base64.b64encode(message)
+        message = message + self.DELIMITER
+        return message
     
     
     def __disassembleMessage(self, message):
         if not message.endswith(self.DELIMITER):
-            raise RuntimeError("Attempted to decode malformed message.")
+            raise RuntimeError("Attempted to decode malformed message: %s" % message)
         
-        message = message.rstrip(self.DELIMITER)
+        message = message[:-len(self.DELIMITER)]
+        message = base64.b64decode(message)
         senderToken, action, data = message.split(self.SEPERATOR)
-        data = simplejson.loads(data)
+        data = yaml.load(data)
         return senderToken, action, data
 
 
 class Node(object):
-    localServer = None
-    address = None
-    token = None
+    __localServer = None
+    __address = None
+    __token = None
     
     def __init__(self, localServer, remoteAddress, token = None):
-        self.localServer = localServer
-        self.address = tuple(remoteAddress)
+        self.__localServer = localServer
+        self.__address = tuple(remoteAddress)
         
         if not token:
             token, action, data = self.__sendRegisterNewServer()
         
-        self.token = token
+        self.__token = token
     
     
     def getAddress(self):
-        return self.address
+        return self.__address
     
     
     def getToken(self):
-        return self.token
+        return self.__token
     
     
     def sendMessage(self, action, data = None):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(self.address)
+        s.connect(self.__address)
         
-        messaging = MessagingSocket(s, self.localServer)
+        messaging = MessagingSocket(s, self.__localServer)
         messaging.send(action, data)
         response = messaging.recv()
         messaging.close()
@@ -296,5 +330,5 @@ class Node(object):
     
     
     def __sendRegisterNewServer(self):
-        return self.sendMessage("RegisterNewServer", self.localServer.getServerAddress())
+        return self.sendMessage("RegisterNewServer", self.__localServer.getServerAddress())
 

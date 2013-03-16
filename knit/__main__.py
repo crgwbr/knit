@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # 
-# knit.__init__
+# knit.__main__
 
 from optparse import OptionParser
 from wsgiref.simple_server import make_server
@@ -109,6 +109,7 @@ class KnitMeshProxy(object):
     def __initProxyServer(self):
         cacheBackend = self.__getConfigSetting('cache.backend')
         cache = MeshCache(self.meshServer, cacheBackend)
+        self.meshServer.setCacheBackend(cache)
         
         httpBackend = self.__getConfigSetting('http.backend')
         logging.info("Using HTTP backend %(host)s:%(port)s" % httpBackend)

@@ -27,17 +27,16 @@ class WSGIEnviron(object):
 
 
 class HTTPProxyServer:
-    backend = None
-    cache = None
-    
-    cacheMethods = []
-    cacheRules = []
-    preventCachingControls = ('private', 'no-cache', 'no-store', 'must-revalidate', 'proxy-revalidate')
+    __backend = None
+    __cache = None
+    __cacheMethods = []
+    __cacheRules = []
+    __preventCachingControls = ('private', 'no-cache', 'no-store', 'must-revalidate', 'proxy-revalidate')
     
     
     def __init__(self, backend, cache = None):
-        self.backend = backend
-        self.cache = cache or Cache('DummyCache')
+        self.__backend = backend
+        self.__cache = cache or Cache('DummyCache')
         
         self.setCacheMethods(('GET', 'HEAD'))
         self.setCacheRules((("^.*$", "%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"),))
@@ -46,18 +45,18 @@ class HTTPProxyServer:
     def setCacheMethods(self, methods):
         if not methods:
             return
-        self.cacheMethods = methods
+        self.__cacheMethods = methods
     
     
     def setCacheRules(self, rules):
         if not rules:
             return
         
-        self.cacheRules = []
+        self.__cacheRules = []
         for pattern, format in rules:
             cre = re.compile(pattern)
             rule = cre, format
-            self.cacheRules.append(rule)
+            self.__cacheRules.append(rule)
     
     
     def __call__(self, environ, startResponse):
@@ -73,7 +72,7 @@ class HTTPProxyServer:
         responseParts = None
         saveToCache = False
         if cacheKey:
-            responseParts = self.cache.get(cacheKey)
+            responseParts = self.__cache.get(cacheKey)
         
         if not responseParts:
             responseParts = self.__fetchFromBackend(url)
@@ -84,7 +83,7 @@ class HTTPProxyServer:
         if cacheKey and saveToCache:
             timeout = self.__calculateCacheTimeout(dict(responseHeaders))
             if timeout > 0:
-                self.cache.set(cacheKey, responseParts, timeout)
+                self.__cache.set(cacheKey, responseParts, timeout)
         
         self.startResponse(status, responseHeaders)
         yield body
@@ -93,8 +92,8 @@ class HTTPProxyServer:
     def __assembleBackendURL(self):
         url = "%s://%s:%s%s" % (
             self.environ['wsgi.url_scheme'],
-            self.backend['host'],
-            self.backend['port'],
+            self.__backend['host'],
+            self.__backend['port'],
             self.environ['PATH_INFO'])
         
         if self.environ['QUERY_STRING']:
@@ -111,7 +110,7 @@ class HTTPProxyServer:
                 if not is_hop_by_hop(key):
                    headers[key] = value
         
-        headers['Host'] = self.backend['host']
+        headers['Host'] = self.__backend['host']
         return headers
     
     
@@ -132,7 +131,7 @@ class HTTPProxyServer:
         
         maxAge = -1
         for control in cacheControl:
-            if control in self.preventCachingControls:
+            if control in self.__preventCachingControls:
                 return -1
             
             try:
@@ -149,16 +148,17 @@ class HTTPProxyServer:
         fn = self.__getRequestHandler()
         headers = self.__assembleRequestHeaders()
         response = fn(url, headers=headers, allow_redirects=False, stream=True)
+        
         responseHeaders = self.__assembleResponseHeaders(response.headers)
         status = "%s %s" % (response.status_code, requests.codes[response.status_code])
         return response.raw.read(), status, responseHeaders
     
     
     def __generateCacheKey(self, url):
-        if self.environ['REQUEST_METHOD'] not in self.cacheMethods:
+        if self.environ['REQUEST_METHOD'] not in self.__cacheMethods:
             return None
         
-        for rule, keyFormat in self.cacheRules:
+        for rule, keyFormat in self.__cacheRules:
             if rule.match(url):
                 return keyFormat % self.environ
         

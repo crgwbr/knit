@@ -8,7 +8,7 @@ log:
 cache:
     backend: "MemoryCache"
     rules:
-        - ["^.*$", "%(REQUEST_METHOD)s;%(SERVER_PROTOCOL)s;%(SERVER_NAME)s;%(SERVER_PORT)s;%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"]
+        - ["^.*$", "%(REQUEST_METHOD)s;%(PATH_INFO)s;%(QUERY_STRING)s;%(HTTP_COOKIE)s"]
     methods:
         - "HEAD"
         - "GET"
